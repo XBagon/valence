@@ -1,21 +1,9 @@
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use log::{LevelFilter, info};
+use log::LevelFilter;
 use num::Integer;
-use uuid::Uuid;
-use valence::biome::Biome;
-use valence::block::BlockState;
-use valence::chunk::{Chunk, UnloadedChunk};
-use valence::client::{handle_event_default, GameMode};
-use valence::config::{Config, ServerListPing};
-use valence::dimension::{Dimension, DimensionId};
-use valence::entity::{EntityId, EntityKind};
-use valence::player_list::PlayerListId;
-use valence::server::{Server, SharedServer, ShutdownResult};
-use valence::text::{Color, TextFormat, Text};
-use valence::{async_trait, ident, util};
-use vek::Vec3;
+use valence::prelude::*;
 
 pub fn main() -> ShutdownResult {
     env_logger::Builder::new()
@@ -74,14 +62,6 @@ impl Config for Game {
         }]
     }
 
-    fn biomes(&self) -> Vec<Biome> {
-        vec![Biome {
-            name: ident!("valence:default_biome"),
-            grass_color: Some(0x00ff00),
-            ..Biome::default()
-        }]
-    }
-
     async fn server_list_ping(
         &self,
         _server: &SharedServer<Self>,
@@ -132,32 +112,32 @@ impl Config for Game {
             }
         }
 
-        //let (id, e) = server
-        //    .entities
-        //    .insert_with_uuid(
-        //        EntityKind::Player,
-        //        valence::uuid::uuid!("f84c6a79-0a4e-45e0-879b-cd49ebd4c4e2"),
-        //        (),
-        //    )
-        //    .unwrap();
-        //server.state.herobrine = id;
-        //e.set_world(world_id);
-        //e.set_position(Vec3::new(50., 0., 40.));
-        //e.set_head_yaw(-180.0);
-        ////e.set_yaw(yaw as f32);
-        ////e.set_pitch(pitch as f32);
-//
-        //server
-        //    .player_lists
-        //    .get_mut(&server.state.player_list.as_ref().unwrap())
-        //    .insert(
-        //        valence::uuid::uuid!("f84c6a79-0a4e-45e0-879b-cd49ebd4c4e2"),
-        //        "Herobrine",
-        //        None,
-        //        GameMode::Survival,
-        //        0,
-        //        Text::text("???"),
-        //    );
+        let (id, e) = server
+            .entities
+            .insert_with_uuid(
+                EntityKind::Player,
+                valence::uuid::uuid!("f84c6a79-0a4e-45e0-879b-cd49ebd4c4e2"),
+                (),
+            )
+            .unwrap();
+        server.state.herobrine = id;
+        e.set_world(world_id);
+        e.set_position(Vec3::new(50., 0., 40.));
+        e.set_head_yaw(-180.0);
+        //e.set_yaw(yaw as f32);
+        //e.set_pitch(pitch as f32);
+
+        server
+            .player_lists
+            .get_mut(&server.state.player_list.as_ref().unwrap())
+            .insert(
+                valence::uuid::uuid!("f84c6a79-0a4e-45e0-879b-cd49ebd4c4e2"),
+                "Herobrine",
+                None,
+                GameMode::Survival,
+                0,
+                Text::text("???"),
+            );
     }
 
     fn update(&self, server: &mut Server<Self>) {
