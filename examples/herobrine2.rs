@@ -1,21 +1,10 @@
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use log::{LevelFilter, info};
+use log::LevelFilter;
 use num::Integer;
-use uuid::Uuid;
-use valence::biome::Biome;
-use valence::block::BlockState;
-use valence::chunk::{Chunk, UnloadedChunk};
-use valence::client::{handle_event_default, GameMode};
-use valence::config::{Config, ServerListPing};
-use valence::dimension::{Dimension, DimensionId};
-use valence::entity::{EntityId, EntityKind};
-use valence::player_list::PlayerListId;
-use valence::server::{Server, SharedServer, ShutdownResult};
-use valence::text::{Color, TextFormat, Text};
-use valence::{async_trait, ident, util};
-use vek::Vec3;
+use valence::client::{DiggingStatus, Hand};
+use valence::prelude::*;
 
 pub fn main() -> ShutdownResult {
     env_logger::Builder::new()
@@ -27,10 +16,7 @@ pub fn main() -> ShutdownResult {
         Game {
             player_count: AtomicUsize::new(0),
         },
-        ServerState {
-            player_list: None,
-            herobrine: EntityId::NULL,
-        },
+        ServerState { player_list: None },
     )
 }
 
@@ -40,7 +26,6 @@ struct Game {
 
 struct ServerState {
     player_list: Option<PlayerListId>,
-    herobrine: EntityId,
 }
 
 #[derive(Default)]
@@ -74,14 +59,6 @@ impl Config for Game {
         }]
     }
 
-    fn biomes(&self) -> Vec<Biome> {
-        vec![Biome {
-            name: ident!("valence:default_biome"),
-            grass_color: Some(0x00ff00),
-            ..Biome::default()
-        }]
-    }
-
     async fn server_list_ping(
         &self,
         _server: &SharedServer<Self>,
@@ -98,7 +75,7 @@ impl Config for Game {
     }
 
     fn init(&self, server: &mut Server<Self>) {
-        let (world_id, world) = server.worlds.insert(DimensionId::default(), ());
+        let world = server.worlds.insert(DimensionId::default(), ()).1;
         server.state.player_list = Some(server.player_lists.insert(()).0);
 
         // initialize chunks
@@ -131,39 +108,11 @@ impl Config for Game {
                 }
             }
         }
-
-        //let (id, e) = server
-        //    .entities
-        //    .insert_with_uuid(
-        //        EntityKind::Player,
-        //        valence::uuid::uuid!("f84c6a79-0a4e-45e0-879b-cd49ebd4c4e2"),
-        //        (),
-        //    )
-        //    .unwrap();
-        //server.state.herobrine = id;
-        //e.set_world(world_id);
-        //e.set_position(Vec3::new(50., 0., 40.));
-        //e.set_head_yaw(-180.0);
-        ////e.set_yaw(yaw as f32);
-        ////e.set_pitch(pitch as f32);
-//
-        //server
-        //    .player_lists
-        //    .get_mut(&server.state.player_list.as_ref().unwrap())
-        //    .insert(
-        //        valence::uuid::uuid!("f84c6a79-0a4e-45e0-879b-cd49ebd4c4e2"),
-        //        "Herobrine",
-        //        None,
-        //        GameMode::Survival,
-        //        0,
-        //        Text::text("???"),
-        //    );
     }
 
     fn update(&self, server: &mut Server<Self>) {
-        let time = server.shared.current_tick() as f64 / server.shared.tick_rate() as f64;
-        let (world_id, _world) = server.worlds.iter_mut().next().unwrap();
-        
+        let (world_id, world) = server.worlds.iter_mut().next().unwrap();
+
         let spawn_pos = [SIZE_X as f64 / 2.0, 1.0, SIZE_Z as f64 / 2.0];
 
         server.clients.retain(|_, client| {
@@ -205,6 +154,9 @@ impl Config for Game {
                         None,
                     );
                 }
+
+                client.set_game_mode(GameMode::Creative);
+                client.send_message("Welcome to Valence! Build something cool.".italic());
             }
 
             if client.is_disconnected() {
@@ -224,38 +176,58 @@ impl Config for Game {
 
             while let Some(event) = handle_event_default(client, player) {
                 match event {
+                    ClientEvent::Digging {
+                        position, status, ..
+                    } => {
+                        match status {
+                            DiggingStatus::Start => {
+                                // Allows clients in creative mode to break blocks.
+                                if client.game_mode() == GameMode::Creative {
+                                    world.chunks.set_block_state(position, BlockState::AIR);
+                                }
+                            }
+                            DiggingStatus::Finish => {
+                                // Allows clients in survival mode to break blocks.
+                                world.chunks.set_block_state(position, BlockState::AIR);
+                            }
+                            _ => {}
+                        }
+                    }
+                    ClientEvent::InteractWithBlock {
+                        hand,
+                        location,
+                        face,
+                        ..
+                    } => {
+                        if hand == Hand::Main {
+                            if let Some(stack) = client.held_item() {
+                                if let Some(held_block_kind) = stack.item.to_block_kind() {
+                                    let block_to_place = BlockState::from_kind(held_block_kind);
+
+                                    if world
+                                        .chunks
+                                        .block_state(location)
+                                        .map(|s| s.is_replaceable())
+                                        .unwrap_or(false)
+                                    {
+                                        world.chunks.set_block_state(location, block_to_place);
+                                    } else {
+                                        let place_at = location.get_in_direction(face);
+                                        world.chunks.set_block_state(place_at, block_to_place);
+                                    }
+
+                                    if client.game_mode() != GameMode::Creative {
+                                        client.consume_one_held_item();
+                                    }
+                                }
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
 
             true
         });
-
-        let herobrine = server.entities.get_mut(server.state.herobrine).expect("missing ???");
-
-        
-        
-        //herobrine.set_head_yaw(-180.0 + (time * 10ma.0) as f32);
-        //herobrine.set_yaw(180.0);
-
-        /* if time > 5.0 {
-            let time = time - 5.0;
-            let yaw = ((time*4.0).floor() * 5.0) as f32;
-            if herobrine.yaw() != yaw {
-                herobrine.set_yaw(yaw);
-                server.clients.iter_mut().for_each(|c| c.1.send_message(format!("yaw = {}", yaw)));
-            }
-        } */
-
-    }
-}
-
-struct Herobrine {
-
-}
-
-impl Herobrine {
-    fn closest_player() {
-        
     }
 }
