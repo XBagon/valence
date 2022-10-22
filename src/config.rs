@@ -2,7 +2,6 @@
 
 use std::borrow::Cow;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
-use std::panic::{RefUnwindSafe, UnwindSafe};
 
 use async_trait::async_trait;
 use serde::Serialize;
@@ -24,7 +23,7 @@ use crate::{Ticks, STANDARD_TPS};
 /// [async_trait]: https://docs.rs/async-trait/latest/async_trait/
 #[async_trait]
 #[allow(unused_variables)]
-pub trait Config: Sized + Send + Sync + UnwindSafe + RefUnwindSafe + 'static {
+pub trait Config: Sized + Send + Sync + 'static {
     /// Custom state to store with the [`Server`].
     type ServerState: Send + Sync;
     /// Custom state to store with every [`Client`](crate::client::Client).
@@ -78,21 +77,15 @@ pub trait Config: Sized + Send + Sync + UnwindSafe + RefUnwindSafe + 'static {
         STANDARD_TPS
     }
 
-    /// Called once at startup to get the "online mode" option, which determines
-    /// if client authentication and encryption should take place.
-    ///
-    /// When online mode is disabled, malicious clients can give themselves any
-    /// username and UUID they want, potentially gaining privileges they
-    /// might not otherwise have. Additionally, encryption is only enabled in
-    /// online mode. For these reasons online mode should only be disabled
-    /// for development purposes and enabled on servers exposed to the
-    /// internet.
+    /// Called once at startup to get the connection mode option, which
+    /// determines if client authentication and encryption should take place
+    /// and if the server should get the player data from a proxy.
     ///
     /// # Default Implementation
     ///
-    /// Returns `true`.
-    fn online_mode(&self) -> bool {
-        true
+    /// Returns [`ConnectionMode::Online`].
+    fn connection_mode(&self) -> ConnectionMode {
+        ConnectionMode::Online
     }
 
     /// Called once at startup to get the "prevent-proxy-connections" option,
@@ -177,6 +170,10 @@ pub trait Config: Sized + Send + Sync + UnwindSafe + RefUnwindSafe + 'static {
     /// Additionally, the documented requirements on the fields of [`Biome`]
     /// must be met.
     ///
+    /// **NOTE**: As of 1.19.2, there is a bug in the client which prevents
+    /// joining the game when a biome named "minecraft:plains" is not present.
+    /// Ensure there is a biome named "plains".
+    ///
     /// # Default Implementation
     ///
     /// Returns `vec![Biome::default()]`.
@@ -253,6 +250,10 @@ pub trait Config: Sized + Send + Sync + UnwindSafe + RefUnwindSafe + 'static {
     /// no connections to the server will be made until this function returns.
     ///
     /// This method is called from within a tokio runtime.
+    ///
+    /// # Default Implementation
+    ///
+    /// The default implementation does nothing.
     fn init(&self, server: &mut Server<Self>) {}
 
     /// Called once at the beginning of every server update (also known as
@@ -295,6 +296,61 @@ pub enum ServerListPing<'a> {
     Ignore,
 }
 
+/// Describes how new connections to the server are handled.
+#[non_exhaustive]
+#[derive(Clone, PartialEq, Default)]
+pub enum ConnectionMode {
+    /// The "online mode" fetches all player data (username, UUID, and skin)
+    /// from the [configured session server] and enables encryption.
+    ///
+    /// This mode should be used for all publicly exposed servers which are not
+    /// behind a proxy.
+    ///
+    /// [configured session server]: Config::format_session_server_url
+    #[default]
+    Online,
+    /// Disables client authentication with the configured session server.
+    /// Clients can join with any username and UUID they choose, potentially
+    /// gaining privileges they would not otherwise have. Additionally,
+    /// encryption is disabled and Minecraft's default skins will be used.
+    ///
+    /// This mode should be used for development purposes only and not for
+    /// publicly exposed servers.
+    Offline,
+    /// This mode should be used under one of the following situations:
+    /// - The server is behind a [BungeeCord]/[Waterfall] proxy with IP
+    ///   forwarding enabled.
+    /// - The server is behind a [Velocity] proxy configured to use the `legacy`
+    ///   forwarding mode.
+    ///
+    /// All player data (username, UUID, and skin) is fetched from the proxy,
+    /// but no attempt is made to stop connections originating from
+    /// elsewhere. As a result, you must ensure clients connect through the
+    /// proxy and are unable to connect to the server directly. Otherwise,
+    /// clients can use any username or UUID they choose similar to
+    /// [`ConnectionMode::Offline`].
+    ///
+    /// To protect against this, a firewall can be used. However,
+    /// [`ConnectionMode::Velocity`] is recommended as a secure alternative.
+    ///
+    /// [BungeeCord]: https://www.spigotmc.org/wiki/bungeecord/
+    /// [Waterfall]: https://github.com/PaperMC/Waterfall
+    /// [Velocity]: https://velocitypowered.com/
+    BungeeCord,
+    /// This mode is used when the server is behind a [Velocity] proxy
+    /// configured with the forwarding mode `modern`.
+    ///
+    /// All player data (username, UUID, and skin) is fetched from the proxy and
+    /// all connections originating from outside Velocity are blocked.
+    ///
+    /// [Velocity]: https://velocitypowered.com/
+    Velocity {
+        /// The secret key used to prevent connections from outside Velocity.
+        /// The proxy and Valence must be configured to use the same secret key.
+        secret: String,
+    },
+}
+
 /// Represents an individual entry in the player sample.
 #[derive(Clone, Debug, Serialize)]
 pub struct PlayerSampleEntry<'a> {
@@ -305,4 +361,34 @@ pub struct PlayerSampleEntry<'a> {
     pub name: Cow<'a, str>,
     /// The player UUID.
     pub id: Uuid,
+}
+
+/// A minimal `Config` implementation for testing purposes.
+#[cfg(test)]
+pub(crate) struct MockConfig<S = (), Cl = (), E = (), W = (), Ch = (), P = ()> {
+    _marker: std::marker::PhantomData<(S, Cl, E, W, Ch, P)>,
+}
+
+#[cfg(test)]
+impl<S, Cl, E, W, Ch, P> Config for MockConfig<S, Cl, E, W, Ch, P>
+where
+    S: Send + Sync + 'static,
+    Cl: Default + Send + Sync + 'static,
+    E: Send + Sync + 'static,
+    W: Send + Sync + 'static,
+    Ch: Send + Sync + 'static,
+    P: Send + Sync + 'static,
+{
+    type ServerState = S;
+    type ClientState = Cl;
+    type EntityState = E;
+    type WorldState = W;
+    type ChunkState = Ch;
+    type PlayerListState = P;
+
+    fn max_connections(&self) -> usize {
+        64
+    }
+
+    fn update(&self, _server: &mut Server<Self>) {}
 }

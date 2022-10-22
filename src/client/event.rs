@@ -7,13 +7,15 @@ use crate::block_pos::BlockPos;
 use crate::config::Config;
 use crate::entity::types::Pose;
 use crate::entity::{Entity, EntityEvent, EntityId, TrackedData};
-use crate::itemstack::ItemStack;
+use crate::ident::Ident;
+use crate::inventory::Inventory;
+use crate::item::ItemStack;
 use crate::protocol::packets::c2s::play::ClickContainerMode;
 pub use crate::protocol::packets::c2s::play::{
     BlockFace, ChatMode, DisplayedSkinParts, Hand, MainHand, ResourcePackC2s as ResourcePackStatus,
 };
 pub use crate::protocol::packets::s2c::play::GameMode;
-use crate::protocol::{Slot, SlotId, VarInt};
+use crate::protocol::{RawBytes, Slot, SlotId, VarInt};
 
 /// Represents an action performed by a client.
 ///
@@ -130,6 +132,10 @@ pub enum ClientEvent {
         /// Sequence number
         sequence: VarInt,
     },
+    PluginMessageReceived {
+        channel: Ident<String>,
+        data: RawBytes,
+    },
     ResourcePackStatusChanged(ResourcePackStatus),
     /// The client closed a screen. This occurs when the client closes their
     /// inventory, closes a chest inventory, etc.
@@ -172,6 +178,7 @@ pub enum ClientEvent {
         /// The item that is now being carried by the user's cursor
         carried_item: Slot,
     },
+    RespawnRequest,
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -329,12 +336,22 @@ pub fn handle_event_default<C: Config>(
         ClientEvent::SteerBoat { .. } => {}
         ClientEvent::Digging { .. } => {}
         ClientEvent::InteractWithBlock { .. } => {}
+        ClientEvent::PluginMessageReceived { .. } => {}
         ClientEvent::ResourcePackStatusChanged(_) => {}
-        ClientEvent::CloseScreen { .. } => {}
+        ClientEvent::CloseScreen { window_id } => {
+            if let Some(window) = &client.open_inventory {
+                if window.window_id == *window_id {
+                    client.open_inventory = None;
+                }
+            }
+        }
         ClientEvent::DropItem => {}
         ClientEvent::DropItemStack { .. } => {}
-        ClientEvent::SetSlotCreative { .. } => {}
+        ClientEvent::SetSlotCreative { slot_id, slot } => {
+            client.inventory.set_slot(*slot_id, slot.clone());
+        }
         ClientEvent::ClickContainer { .. } => {}
+        ClientEvent::RespawnRequest => {}
     }
 
     entity.set_world(client.world());

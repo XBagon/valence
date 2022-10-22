@@ -1,24 +1,15 @@
 use std::mem;
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use log::LevelFilter;
 use num::Integer;
-use rayon::iter::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
-use valence::biome::Biome;
-use valence::block::BlockState;
-use valence::chunk::{Chunk, UnloadedChunk};
-use valence::client::{handle_event_default, ClientEvent, Hand};
-use valence::config::{Config, ServerListPing};
-use valence::dimension::{Dimension, DimensionId};
+use rayon::prelude::*;
+use valence::client::Hand;
 use valence::entity::types::Pose;
-use valence::entity::{EntityId, EntityKind, TrackedData};
-use valence::player_list::PlayerListId;
+use valence::prelude::*;
+// TODO: re-export this somewhere in valence.
 use valence::protocol::packets::s2c::play::SoundCategory;
-use valence::server::{Server, SharedServer, ShutdownResult};
-use valence::text::{Color, TextFormat};
-use valence::{async_trait, ident};
-use vek::Vec3;
 
 pub fn main() -> ShutdownResult {
     env_logger::Builder::new()
@@ -75,6 +66,10 @@ impl Config for Game {
         MAX_PLAYERS + 64
     }
 
+    fn address(&self) -> SocketAddr {
+        SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), 25565).into() // TODO remove
+    }
+
     fn dimensions(&self) -> Vec<Dimension> {
         vec![Dimension {
             fixed_time: Some(6000),
@@ -84,7 +79,7 @@ impl Config for Game {
 
     fn biomes(&self) -> Vec<Biome> {
         vec![Biome {
-            name: ident!("valence:default_biome"),
+            name: ident!("plains"),
             grass_color: Some(0x00ff00),
             ..Biome::default()
         }]
@@ -279,7 +274,7 @@ impl Config for Game {
             mem::swap(&mut server.state.board, &mut server.state.board_buf);
         }
 
-        let min_y = server.shared.dimensions().next().unwrap().1.min_y;
+        let min_y = world.chunks.min_y();
 
         for chunk_x in 0..Integer::div_ceil(&SIZE_X, &16) {
             for chunk_z in 0..Integer::div_ceil(&SIZE_Z, &16) {

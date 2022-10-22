@@ -2,19 +2,8 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use log::LevelFilter;
-use valence::block::{BlockPos, BlockState};
-use valence::chunk::{Chunk, UnloadedChunk};
-use valence::client::{
-    handle_event_default, ClientEvent, ClientId, GameMode, InteractWithEntityKind,
-};
-use valence::config::{Config, ServerListPing};
-use valence::dimension::DimensionId;
-use valence::entity::{EntityEvent, EntityId, EntityKind};
-use valence::player_list::PlayerListId;
-use valence::server::{Server, SharedServer, ShutdownResult};
-use valence::text::{Color, TextFormat};
-use valence::{async_trait, Ticks};
-use vek::{Vec2, Vec3};
+use valence::client::InteractWithEntityKind;
+use valence::prelude::*;
 
 pub fn main() -> ShutdownResult {
     env_logger::Builder::new()
@@ -88,9 +77,8 @@ impl Config for Game {
         let (_, world) = server.worlds.insert(DimensionId::default(), ());
         server.state = Some(server.player_lists.insert(()).0);
 
-        let dim = server.shared.dimension(DimensionId::default());
-        let min_y = dim.min_y;
-        let height = dim.height as usize;
+        let min_y = world.chunks.min_y();
+        let height = world.chunks.height();
 
         // Create circular arena.
         let size = 2;

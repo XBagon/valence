@@ -17,6 +17,7 @@ struct TopLevel {
 struct Block {
     #[allow(unused)]
     id: u16,
+    item_id: u16,
     translation_key: String,
     name: String,
     properties: Vec<Property>,
@@ -45,6 +46,7 @@ struct State {
     id: u16,
     luminance: u8,
     opaque: bool,
+    replaceable: bool,
     collision_shapes: Vec<u16>,
 }
 
@@ -107,6 +109,18 @@ pub fn build() -> anyhow::Result<TokenStream> {
                 let id = s.id;
                 quote! {
                     #id => false,
+                }
+            })
+        })
+        .collect::<TokenStream>();
+
+    let state_to_replaceable_arms = blocks
+        .iter()
+        .flat_map(|b| {
+            b.states.iter().filter(|s| s.replaceable).map(|s| {
+                let id = s.id;
+                quote! {
+                    #id => true,
                 }
             })
         })
@@ -313,6 +327,31 @@ pub fn build() -> anyhow::Result<TokenStream> {
         })
         .collect::<TokenStream>();
 
+    let block_kind_to_item_kind_arms = blocks
+        .iter()
+        .map(|block| {
+            let name = ident(block.name.to_pascal_case());
+            let item_id = block.item_id;
+
+            quote! {
+                BlockKind::#name => #item_id,
+            }
+        })
+        .collect::<TokenStream>();
+
+    let block_kind_from_item_kind_arms = blocks
+        .iter()
+        .filter(|block| block.item_id != 0)
+        .map(|block| {
+            let name = ident(block.name.to_pascal_case());
+            let item_id = block.item_id;
+
+            quote! {
+                #item_id => Some(BlockKind::#name),
+            }
+        })
+        .collect::<TokenStream>();
+
     let block_kind_count = blocks.len();
 
     let prop_names = blocks
@@ -427,11 +466,6 @@ pub fn build() -> anyhow::Result<TokenStream> {
                 }
             }
 
-            pub(crate) const fn from_raw_unchecked(id: u16) -> Self {
-                debug_assert!(Self::from_raw(id).is_some());
-                Self(id)
-            }
-
             /// Returns the [`BlockKind`] of this block state.
             pub const fn to_kind(self) -> BlockKind {
                 match self.0 {
@@ -496,6 +530,13 @@ pub fn build() -> anyhow::Result<TokenStream> {
                 }
             }
 
+            pub const fn is_replaceable(self) -> bool {
+                match self.0 {
+                    #state_to_replaceable_arms
+                    _ => false,
+                }
+            }
+
             const SHAPES: [[f64; 6]; #shape_count] = [
                 #(#shapes,)*
             ];
@@ -535,7 +576,7 @@ pub fn build() -> anyhow::Result<TokenStream> {
             /// Construct a block kind from its snake_case name.
             ///
             /// Returns `None` if the name is invalid.
-            pub fn from_str(name: &str) -> Option<BlockKind> {
+            pub fn from_str(name: &str) -> Option<Self> {
                 match name {
                     #block_kind_from_str_arms
                     _ => None
@@ -565,6 +606,35 @@ pub fn build() -> anyhow::Result<TokenStream> {
             pub const fn translation_key(self) -> &'static str {
                 match self {
                     #kind_to_translation_key_arms
+                }
+            }
+
+            /// Converts a block kind to its corresponding item kind.
+            ///
+            /// [`ItemKind::Air`] is used to indicate the absence of an item.
+            pub const fn to_item_kind(self) -> ItemKind {
+                let id = match self {
+                    #block_kind_to_item_kind_arms
+                };
+
+                // TODO: unwrap() is not const yet.
+                match ItemKind::from_raw(id) {
+                    Some(k) => k,
+                    None => unreachable!(),
+                }
+            }
+
+            /// Constructs a block kind from an item kind.
+            ///
+            /// If the given item does not have a corresponding block, `None` is returned.
+            pub const fn from_item_kind(item: ItemKind) -> Option<Self> {
+                // The "default" blocks are ordered before the other variants.
+                // For instance, `torch` comes before `wall_torch` so this match
+                // should do the correct thing.
+                #[allow(unreachable_patterns)]
+                match item.to_raw() {
+                    #block_kind_from_item_kind_arms
+                    _ => None,
                 }
             }
 

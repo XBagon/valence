@@ -2,32 +2,38 @@ use std::io::Write;
 
 use byteorder::ReadBytesExt;
 
-use crate::itemstack::ItemStack;
+use crate::item::{ItemKind, ItemStack};
 use crate::nbt::Compound;
-use crate::protocol::{Decode, Encode, VarInt};
+use crate::protocol::{Decode, Encode};
 
 pub type SlotId = i16;
 
 /// Represents a slot in an inventory.
-#[derive(Clone, Default, Debug)]
-pub enum Slot {
-    #[default]
-    Empty,
-    Present(ItemStack),
-}
+pub type Slot = Option<ItemStack>;
 
 impl Encode for Slot {
     fn encode(&self, w: &mut impl Write) -> anyhow::Result<()> {
         match self {
-            Slot::Empty => false.encode(w),
-            Slot::Present(s) => {
+            None => false.encode(w),
+            Some(s) => {
                 true.encode(w)?;
-                s.item_id.encode(w)?;
-                s.item_count.encode(w)?;
+                s.item.encode(w)?;
+                s.count().encode(w)?;
                 match &s.nbt {
                     Some(n) => n.encode(w),
                     None => 0u8.encode(w),
                 }
+            }
+        }
+    }
+
+    fn encoded_len(&self) -> usize {
+        match self {
+            None => 1,
+            Some(s) => {
+                1 + s.item.encoded_len()
+                    + 1
+                    + s.nbt.as_ref().map(|nbt| nbt.encoded_len()).unwrap_or(1)
             }
         }
     }
@@ -37,37 +43,17 @@ impl Decode for Slot {
     fn decode(r: &mut &[u8]) -> anyhow::Result<Self> {
         let present = bool::decode(r)?;
         if !present {
-            return Ok(Slot::Empty);
+            return Ok(None);
         }
-        Ok(Slot::Present(ItemStack {
-            item_id: VarInt::decode(r)?,
-            item_count: u8::decode(r)?,
-            nbt: if r.first() == Some(&0) {
+        Ok(Some(ItemStack::new(
+            ItemKind::decode(r)?,
+            u8::decode(r)?,
+            if r.first() == Some(&0) {
                 r.read_u8()?;
                 None
             } else {
                 Some(Compound::decode(r)?)
             },
-        }))
-    }
-}
-
-impl From<Option<ItemStack>> for Slot {
-    fn from(s: Option<ItemStack>) -> Self {
-        if let Some(s) = s {
-            Slot::Present(s)
-        } else {
-            Slot::Empty
-        }
-    }
-}
-
-impl From<Slot> for Option<ItemStack> {
-    fn from(s: Slot) -> Self {
-        if let Slot::Present(s) = s {
-            Some(s)
-        } else {
-            None
-        }
+        )))
     }
 }

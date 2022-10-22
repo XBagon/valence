@@ -127,6 +127,14 @@ pub fn ray_box_intersect(ro: Vec3<f64>, rd: Vec3<f64>, bb: Aabb<f64>) -> Option<
     }
 }
 
+/// Calculates the minimum number of bits needed to represent the integer `n`.
+/// Also known as `floor(log2(n)) + 1`.
+///
+/// This returns `0` if `n` is `0`.
+pub(crate) const fn bits_needed(n: usize) -> usize {
+    (usize::BITS - n.leading_zeros()) as _
+}
+
 #[cfg(test)]
 mod tests {
     use approx::assert_relative_eq;

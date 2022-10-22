@@ -1,266 +1,290 @@
-//! Namespaced identifiers.
+//! Resource identifiers.
 
-use std::borrow::Cow;
-use std::hash;
+use std::cmp::Ordering;
+use std::error::Error;
+use std::fmt;
+use std::fmt::Formatter;
+use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::str::FromStr;
 
-use ascii::{AsAsciiStr, AsciiChar, AsciiStr, IntoAsciiString};
-use serde::de::Visitor;
-use serde::{Deserialize, Serialize};
-use thiserror::Error;
+use serde::de::Error as _;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::nbt;
-use crate::protocol::{encode_string_bounded, BoundedString, Decode, Encode};
+use crate::protocol::{Decode, Encode};
 
-/// An identifier is a string split into a "namespace" part and a "path" part.
-/// For instance `minecraft:apple` and `apple` are both valid identifiers.
+/// A wrapper around a string type `S` which guarantees the wrapped string is a
+/// valid resource identifier.
+///
+/// A resource identifier is a string divided into a "namespace" part and a
+/// "path" part. For instance `minecraft:apple` and `valence:frobnicator` are
+/// both valid identifiers. A string must match the regex
+/// `^([a-z0-9_.-]+:)?[a-z0-9_.-\/]+$` to be considered valid.
 ///
 /// If the namespace part is left off (the part before and including the colon)
-/// the namespace is considered to be "minecraft" for the purposes of equality.
+/// the namespace is considered to be "minecraft" for the purposes of equality,
+/// ordering, and hashing.
 ///
-/// A string must match the regex `^([a-z0-9_-]+:)?[a-z0-9_\/.-]+$` to be a
-/// valid identifier.
-#[derive(Clone, Eq)]
-pub struct Ident {
-    ident: Cow<'static, AsciiStr>,
-    /// The index of the ':' character in the string.
-    /// If there is no namespace then it is `usize::MAX`.
-    ///
-    /// Since the string only contains ASCII characters, we can slice it
-    /// in O(1) time.
-    colon_idx: usize,
+/// # Contract
+///
+/// The type `S` must meet the following criteria:
+/// - All calls to [`AsRef::as_ref`] and [`Borrow::borrow`][borrow] while the
+///   string is wrapped in `Ident` must return the same value.
+///
+/// [borrow]: std::borrow::Borrow::borrow
+#[derive(Copy, Clone, Debug)]
+pub struct Ident<S> {
+    string: S,
+    path_start: usize,
 }
 
-/// The error type which is created when an [`Ident`] cannot be parsed from a
-/// string.
-#[derive(Clone, Debug, Error)]
-#[error("invalid identifier \"{src}\"")]
-pub struct ParseError {
-    src: Cow<'static, str>,
-}
-
-impl Ident {
-    /// Parses a new identifier from a string.
-    ///
-    /// An error is returned if the string is not a valid identifier.
-    pub fn new(str: impl Into<Cow<'static, str>>) -> Result<Ident, ParseError> {
-        #![allow(bindings_with_variant_name)]
-
-        let cow = match str.into() {
-            Cow::Borrowed(s) => {
-                Cow::Borrowed(s.as_ascii_str().map_err(|_| ParseError { src: s.into() })?)
-            }
-            Cow::Owned(s) => Cow::Owned(s.into_ascii_string().map_err(|e| ParseError {
-                src: e.into_source().into(),
-            })?),
-        };
-
-        let s = cow.as_ref();
-
-        let check_namespace = |s: &AsciiStr| {
+impl<S: AsRef<str>> Ident<S> {
+    pub fn new(string: S) -> Result<Self, IdentError<S>> {
+        let check_namespace = |s: &str| {
             !s.is_empty()
                 && s.chars()
-                    .all(|c| matches!(c.as_char(), 'a'..='z' | '0'..='9' | '_' | '-'))
+                    .all(|c| matches!(c, 'a'..='z' | '0'..='9' | '_' | '.' | '-'))
         };
-        let check_name = |s: &AsciiStr| {
+        let check_path = |s: &str| {
             !s.is_empty()
                 && s.chars()
-                    .all(|c| matches!(c.as_char(), 'a'..='z' | '0'..='9' | '_' | '/' | '.' | '-'))
+                    .all(|c| matches!(c, 'a'..='z' | '0'..='9' | '_' | '.' | '-' | '/'))
         };
 
-        if let Some(colon_idx) = s.chars().position(|c| c == AsciiChar::Colon) {
-            if check_namespace(&s[..colon_idx]) && check_name(&s[colon_idx + 1..]) {
-                Ok(Self {
-                    ident: cow,
-                    colon_idx,
-                })
-            } else {
-                Err(ParseError {
-                    src: ascii_cow_to_str_cow(cow),
-                })
+        let str = string.as_ref();
+
+        match str.split_once(':') {
+            Some((namespace, path)) if check_namespace(namespace) && check_path(path) => {
+                let path_start = namespace.len() + 1;
+                Ok(Self { string, path_start })
             }
-        } else if check_name(s) {
-            Ok(Self {
-                ident: cow,
-                colon_idx: usize::MAX,
-            })
-        } else {
-            Err(ParseError {
-                src: ascii_cow_to_str_cow(cow),
-            })
+            None if check_path(str) => Ok(Self {
+                string,
+                path_start: 0,
+            }),
+            _ => Err(IdentError(string)),
         }
     }
 
-    /// Returns the namespace part of this namespaced identifier.
+    /// Returns the namespace part of this resource identifier.
     ///
-    /// If this identifier was constructed from a string without a namespace,
-    /// then `None` is returned.
-    pub fn namespace(&self) -> Option<&str> {
-        if self.colon_idx == usize::MAX {
-            None
+    /// If the underlying string does not contain a namespace followed by a
+    /// ':' character, `"minecraft"` is returned.
+    pub fn namespace(&self) -> &str {
+        if self.path_start == 0 {
+            "minecraft"
         } else {
-            Some(self.ident[..self.colon_idx].as_str())
+            &self.string.as_ref()[..self.path_start - 1]
         }
     }
 
-    /// Returns the path part of this namespaced identifier.
     pub fn path(&self) -> &str {
-        if self.colon_idx == usize::MAX {
-            self.ident.as_str()
-        } else {
-            self.ident[self.colon_idx + 1..].as_str()
-        }
+        &self.string.as_ref()[self.path_start..]
     }
 
     /// Returns the underlying string as a `str`.
     pub fn as_str(&self) -> &str {
-        self.ident.as_str()
+        self.string.as_ref()
+    }
+
+    /// Borrows the underlying string and returns it as an `Ident`. This
+    /// operation is infallible and no checks need to be performed.
+    pub fn as_str_ident(&self) -> Ident<&str> {
+        Ident {
+            string: self.string.as_ref(),
+            path_start: self.path_start,
+        }
+    }
+
+    /// Converts the underlying string to its owned representation and returns
+    /// it as an `Ident`. This operation is infallible and no checks need to be
+    /// performed.
+    pub fn to_owned_ident(&self) -> Ident<S::Owned>
+    where
+        S: ToOwned,
+        S::Owned: AsRef<str>,
+    {
+        Ident {
+            string: self.string.to_owned(),
+            path_start: self.path_start,
+        }
+    }
+
+    /// Consumes the identifier and returns the underlying string.
+    pub fn into_inner(self) -> S {
+        self.string
+    }
+
+    /// Consumes the identifier and returns the underlying string.
+    pub fn get(self) -> S {
+        self.string
     }
 }
 
-fn ascii_cow_to_str_cow(cow: Cow<AsciiStr>) -> Cow<str> {
-    match cow {
-        Cow::Borrowed(s) => Cow::Borrowed(s.as_str()),
-        Cow::Owned(s) => Cow::Owned(s.into()),
-    }
-}
-
-impl ParseError {
-    /// Gets the string that caused the parse error.
-    pub fn into_source(self) -> Cow<'static, str> {
-        self.src
-    }
-}
-
-impl std::fmt::Debug for Ident {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("Identifier").field(&self.as_str()).finish()
-    }
-}
-
-impl FromStr for Ident {
-    type Err = ParseError;
+impl FromStr for Ident<String> {
+    type Err = IdentError<String>;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ident::new(s.to_owned())
     }
 }
 
-impl From<Ident> for String {
-    fn from(id: Ident) -> Self {
-        id.ident.into_owned().into()
-    }
-}
-
-impl From<Ident> for Cow<'static, str> {
-    fn from(id: Ident) -> Self {
-        ascii_cow_to_str_cow(id.ident)
-    }
-}
-
-impl From<Ident> for nbt::Value {
-    fn from(id: Ident) -> Self {
-        Self::String(id.into())
-    }
-}
-
-impl AsRef<str> for Ident {
-    fn as_ref(&self) -> &str {
-        self.as_str()
-    }
-}
-
-impl TryFrom<String> for Ident {
-    type Error = ParseError;
+impl TryFrom<String> for Ident<String> {
+    type Error = IdentError<String>;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
         Ident::new(value)
     }
 }
 
-impl TryFrom<&'static str> for Ident {
-    type Error = ParseError;
-
-    fn try_from(value: &'static str) -> Result<Self, Self::Error> {
-        Ident::new(value)
+impl<S> From<Ident<S>> for String
+where
+    S: Into<String> + AsRef<str>,
+{
+    fn from(id: Ident<S>) -> Self {
+        if id.path_start == 0 {
+            format!("minecraft:{}", id.string.as_ref())
+        } else {
+            id.string.into()
+        }
     }
 }
 
-impl std::fmt::Display for Ident {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{}", self.as_str())
+impl<S: AsRef<str>> fmt::Display for Ident<S> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}", self.namespace(), self.path())
     }
 }
 
-/// Equality for identifiers respects the fact that "minecraft:apple" and
-/// "apple" have the same meaning.
-impl PartialEq for Ident {
-    fn eq(&self, other: &Self) -> bool {
-        self.namespace().unwrap_or("minecraft") == other.namespace().unwrap_or("minecraft")
-            && self.path() == other.path()
+impl<S, T> PartialEq<Ident<T>> for Ident<S>
+where
+    S: AsRef<str>,
+    T: AsRef<str>,
+{
+    fn eq(&self, other: &Ident<T>) -> bool {
+        self.namespace() == other.namespace() && self.path() == other.path()
     }
 }
 
-impl hash::Hash for Ident {
-    fn hash<H: hash::Hasher>(&self, state: &mut H) {
-        self.namespace().unwrap_or("minecraft").hash(state);
-        self.path().hash(state);
+impl<S> Eq for Ident<S> where S: AsRef<str> {}
+
+impl<S, T> PartialOrd<Ident<T>> for Ident<S>
+where
+    S: AsRef<str>,
+    T: AsRef<str>,
+{
+    fn partial_cmp(&self, other: &Ident<T>) -> Option<Ordering> {
+        (self.namespace(), self.path()).partial_cmp(&(other.namespace(), other.path()))
     }
 }
 
-impl Encode for Ident {
+impl<S> Ord for Ident<S>
+where
+    S: AsRef<str>,
+{
+    fn cmp(&self, other: &Self) -> Ordering {
+        (self.namespace(), self.path()).cmp(&(other.namespace(), other.path()))
+    }
+}
+
+impl<S> Hash for Ident<S>
+where
+    S: AsRef<str>,
+{
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        (self.namespace(), self.path()).hash(state);
+    }
+}
+
+impl<T> Serialize for Ident<T>
+where
+    T: Serialize,
+{
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.string.serialize(serializer)
+    }
+}
+
+impl<'de, T> Deserialize<'de> for Ident<T>
+where
+    T: Deserialize<'de> + AsRef<str>,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ident::new(T::deserialize(deserializer)?).map_err(D::Error::custom)
+    }
+}
+
+impl<S: Encode> Encode for Ident<S> {
     fn encode(&self, w: &mut impl Write) -> anyhow::Result<()> {
-        encode_string_bounded(self.as_str(), 0, 32767, w)
+        self.string.encode(w)
+    }
+
+    fn encoded_len(&self) -> usize {
+        self.string.encoded_len()
     }
 }
 
-impl Decode for Ident {
+impl<S> Decode for Ident<S>
+where
+    S: Decode + AsRef<str> + Send + Sync + 'static,
+{
     fn decode(r: &mut &[u8]) -> anyhow::Result<Self> {
-        let string = BoundedString::<0, 32767>::decode(r)?.0;
-        Ok(Ident::new(string)?)
+        Ok(Ident::new(S::decode(r)?)?)
     }
 }
 
-impl Serialize for Ident {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.as_str().serialize(serializer)
+impl<S> From<Ident<S>> for nbt::Value
+where
+    S: Into<nbt::Value>,
+{
+    fn from(id: Ident<S>) -> Self {
+        id.string.into()
     }
 }
 
-impl<'de> Deserialize<'de> for Ident {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        deserializer.deserialize_str(IdentifierVisitor)
+/// The error type created when an [`Ident`] cannot be parsed from a
+/// string. Contains the offending string.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct IdentError<S>(pub S);
+
+impl<S> fmt::Debug for IdentError<S>
+where
+    S: AsRef<str>,
+{
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        f.debug_tuple("IdentError").field(&self.0.as_ref()).finish()
     }
 }
 
-/// An implementation of `serde::de::Visitor` for Minecraft identifiers.
-struct IdentifierVisitor;
-
-impl<'de> Visitor<'de> for IdentifierVisitor {
-    type Value = Ident;
-
-    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "a valid Minecraft identifier")
-    }
-
-    fn visit_str<E: serde::de::Error>(self, s: &str) -> Result<Self::Value, E> {
-        Ident::from_str(s).map_err(E::custom)
-    }
-
-    fn visit_string<E: serde::de::Error>(self, s: String) -> Result<Self::Value, E> {
-        Ident::new(s).map_err(E::custom)
+impl<S> fmt::Display for IdentError<S>
+where
+    S: AsRef<str>,
+{
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f, "invalid resource identifier \"{}\"", self.0.as_ref())
     }
 }
 
-/// Convenience macro for constructing an [`Ident`] from a format string.
+impl<S> Error for IdentError<S> where S: AsRef<str> {}
+
+/// Convenience macro for constructing an [`Ident<String>`] from a format
+/// string.
 ///
-/// The arguments to this macro are forwarded to [`std::format_args`].
+/// The arguments to this macro are forwarded to [`std::format`].
 ///
 /// # Panics
 ///
-/// The macro will cause a panic if the formatted string is not a valid
+/// The macro will cause a panic if the formatted string is not a valid resource
 /// identifier. See [`Ident`] for more information.
+///
+/// [`Ident<String>`]: [Ident]
 ///
 /// # Examples
 ///
@@ -268,32 +292,39 @@ impl<'de> Visitor<'de> for IdentifierVisitor {
 /// use valence::ident;
 ///
 /// let namespace = "my_namespace";
-/// let apple = ident!("{namespace}:apple");
+/// let path = "my_path";
 ///
-/// assert_eq!(apple.namespace(), Some("my_namespace"));
-/// assert_eq!(apple.path(), "apple");
+/// let id = ident!("{namespace}:{path}");
+///
+/// assert_eq!(id.namespace(), "my_namespace");
+/// assert_eq!(id.path(), "my_path");
 /// ```
 #[macro_export]
 macro_rules! ident {
     ($($arg:tt)*) => {{
-        let errmsg = "invalid identifier in `ident` macro";
-        #[allow(clippy::redundant_closure_call)]
-        (|args: ::std::fmt::Arguments| match args.as_str() {
-            Some(s) => $crate::ident::Ident::new(s).expect(errmsg),
-            None => $crate::ident::Ident::new(args.to_string()).expect(errmsg),
-        })(format_args!($($arg)*))
+        $crate::ident::Ident::new(::std::format!($($arg)*)).unwrap()
     }}
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
+    use std::hash::Hasher;
+
+    use super::*;
+
+    #[test]
+    fn check_namespace_and_path() {
+        let id = ident!("namespace:path");
+        assert_eq!(id.namespace(), "namespace");
+        assert_eq!(id.path(), "path");
+    }
 
     #[test]
     fn parse_valid() {
         ident!("minecraft:whatever");
         ident!("_what-ever55_:.whatever/whatever123456789_");
+        ident!("valence:frobnicator");
     }
 
     #[test]

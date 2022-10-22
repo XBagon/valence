@@ -79,7 +79,8 @@
     trivial_casts,
     trivial_numeric_casts,
     unused_lifetimes,
-    unused_import_braces
+    unused_import_braces,
+    clippy::dbg_macro
 )]
 #![allow(
     clippy::derive_partial_eq_without_eq,
@@ -110,10 +111,10 @@ pub mod dimension;
 pub mod enchant;
 pub mod entity;
 pub mod ident;
-pub mod itemstack;
+pub mod inventory;
+pub mod item;
 pub mod player_list;
 pub mod player_textures;
-#[allow(dead_code)]
 #[doc(hidden)]
 pub mod protocol;
 pub mod server;
@@ -125,8 +126,43 @@ pub mod text;
 pub mod util;
 pub mod world;
 
+/// Use `valence::prelude::*` to import the most commonly used items from the
+/// library.
+pub mod prelude {
+    pub use biome::{Biome, BiomeId};
+    pub use block::{BlockKind, BlockPos, BlockState, PropName, PropValue};
+    pub use chunk::{Chunk, ChunkPos, Chunks, LoadedChunk, UnloadedChunk};
+    pub use client::{handle_event_default, Client, ClientEvent, ClientId, Clients, GameMode};
+    pub use config::{Config, ConnectionMode, PlayerSampleEntry, ServerListPing};
+    pub use dimension::{Dimension, DimensionId};
+    pub use entity::{Entities, Entity, EntityEvent, EntityId, EntityKind, TrackedData};
+    pub use ident::{Ident, IdentError};
+    pub use inventory::{
+        ConfigurableInventory, Inventories, Inventory, InventoryId, PlayerInventory,
+    };
+    pub use item::{ItemKind, ItemStack};
+    pub use player_list::{PlayerList, PlayerListEntry, PlayerListId, PlayerLists};
+    pub use server::{NewClientData, Server, SharedServer, ShutdownResult};
+    pub use spatial_index::{RaycastHit, SpatialIndex};
+    pub use text::{Color, Text, TextFormat};
+    pub use util::{
+        chunks_in_view_distance, from_yaw_and_pitch, is_chunk_in_view_distance, to_yaw_and_pitch,
+    };
+    pub use uuid::Uuid;
+    pub use valence_nbt::Compound;
+    pub use vek::{Aabb, Mat2, Mat3, Mat4, Vec2, Vec3, Vec4};
+    pub use world::{World, WorldId, WorldMeta, Worlds};
+
+    use super::*;
+    pub use crate::{
+        async_trait, ident, nbt, vek, Ticks, LIBRARY_NAMESPACE, PROTOCOL_VERSION, STANDARD_TPS,
+        VERSION_NAME,
+    };
+}
+
 /// The Minecraft protocol version this library currently targets.
 pub const PROTOCOL_VERSION: i32 = 760;
+
 /// The name of the Minecraft version this library currently targets, e.g.
 /// "1.8.2"
 pub const VERSION_NAME: &str = "1.19.2";
@@ -136,6 +172,16 @@ pub const VERSION_NAME: &str = "1.19.2";
 ///
 /// You should avoid using this namespace in your own identifiers.
 pub const LIBRARY_NAMESPACE: &str = "valence";
+
+/// The most recent version of the [Velocity] proxy which has been tested to
+/// work with Valence. The elements of the tuple are (major, minor, patch)
+/// version numbers.
+///
+/// See [`Config::connection_mode`] to configure the proxy used with Valence.
+///
+/// [Velocity]: https://velocitypowered.com/
+/// [`Config::connection_mode`]: config::Config::connection_mode
+pub const SUPPORTED_VELOCITY_VERSION: (u16, u16, u16) = (3, 1, 2);
 
 /// A discrete unit of time where 1 tick is the duration of a
 /// single game update.

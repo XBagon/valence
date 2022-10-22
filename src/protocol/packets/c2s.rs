@@ -8,7 +8,9 @@ pub mod handshake {
     def_struct! {
         Handshake {
             protocol_version: VarInt,
-            server_adddress: BoundedString<0, 255>,
+            // by the minecraft protocol this is specified as a BoundedString<0, 255> but due
+            // issues with Bungeecord ip forwarding this limit is removed here and checked when handling the handshake
+            server_address: String,
             server_port: u16,
             next_state: HandshakeNextState,
         }
@@ -281,7 +283,7 @@ pub mod play {
 
     def_struct! {
         PluginMessageC2s {
-            channel: Ident,
+            channel: Ident<String>,
             data: RawBytes,
         }
     }
@@ -407,7 +409,7 @@ pub mod play {
     def_struct! {
         PlaceRecipe {
             window_id: i8,
-            recipe: Ident,
+            recipe: Ident<String>,
             make_all: bool,
         }
     }
@@ -520,7 +522,7 @@ pub mod play {
 
     def_struct! {
         SetSeenRecipe {
-            recipe_id: Ident,
+            recipe_id: Ident<String>,
         }
     }
 
@@ -542,7 +544,7 @@ pub mod play {
 
     def_enum! {
         SeenAdvancements: VarInt {
-            OpenedTab: Ident = 0,
+            OpenedTab: Ident<String> = 0,
             ClosedScreen = 1,
         }
     }
@@ -610,9 +612,9 @@ pub mod play {
     def_struct! {
         ProgramJigsawBlock {
             location: BlockPos,
-            name: Ident,
-            target: Ident,
-            pool: Ident,
+            name: Ident<String>,
+            target: Ident<String>,
+            pool: Ident<String>,
             final_state: String,
             joint_type: String,
         }

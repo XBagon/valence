@@ -1,12 +1,13 @@
-package dev._00a.valence_extractor.extractors;
+package rs.valence.extractor.extractors;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import dev._00a.valence_extractor.Main;
+import net.minecraft.item.ItemPlacementContext;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.registry.Registry;
 import net.minecraft.world.EmptyBlockView;
+import rs.valence.extractor.Main;
 
 import java.util.LinkedHashMap;
 import java.util.Locale;
@@ -35,8 +36,7 @@ public class Blocks implements Main.Extractor {
             blockJson.addProperty("id", Registry.BLOCK.getRawId(block));
             blockJson.addProperty("name", Registry.BLOCK.getId(block).getPath());
             blockJson.addProperty("translation_key", block.getTranslationKey());
-//            blockJson.addProperty("min_state_id", stateIdCounter);
-//            blockJson.addProperty("max_state_id", stateIdCounter + block.getStateManager().getStates().size() - 1);
+            blockJson.addProperty("item_id", Registry.ITEM.getRawId(block.asItem()));
 
             var propsJson = new JsonArray();
             for (var prop : block.getStateManager().getProperties()) {
@@ -61,6 +61,7 @@ public class Blocks implements Main.Extractor {
                 stateJson.addProperty("id", id);
                 stateJson.addProperty("luminance", state.getLuminance());
                 stateJson.addProperty("opaque", state.isOpaque());
+                stateJson.addProperty("replaceable", state.getMaterial().isReplaceable());
 
                 if (block.getDefaultState().equals(state)) {
                     blockJson.addProperty("default_state_id", id);
